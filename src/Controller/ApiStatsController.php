@@ -4,103 +4,86 @@ declare(strict_types=1);
 
 namespace App\Controller;
 
-use JetBrains\PhpStorm\NoReturn;
+
+use App\Modules\StatByDepartmentModule;
+use App\Rules\StatByDepartmentRules;
+use Exception;
+use RedisException;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
-use Symfony\Component\Cache\CacheItem;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Validator\Exception\ValidationFailedException;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
 use Symfony\Contracts\Cache\CacheInterface;
-use DateTime;
 use Symfony\Component\Routing\Annotation\Route;
-use Symfony\Component\Validator\Constraints as Assert;
+use Symfony\Component\Validator\Constraints\Collection;
+
 
 class ApiStatsController extends AbstractController
 {
     /**
      * @param Request $request
-     * @param CacheInterface $cache
+     * @param CacheInterface $redis
      * @param ValidatorInterface $validator
      * @return JsonResponse
-     * @throws \Exception
+     * @throws ValidationFailedException
+     * @throws Exception
      */
-    #[Assert\NotNull(message: "datamarts is required")]
-    #[Route('/api/stats', name: 'stat_list', methods: ['GET'])]
+    #[Route('/api/stats', name: 'statistics', methods: ['GET'])]
     public function getStatsByDepartmentAndDate(
         Request            $request,
-        CacheInterface     $cache,
+        CacheInterface     $redis,
         ValidatorInterface $validator,
-
-
-        string $datamarts = null
     ): JsonResponse
     {
-        $datamarts = $request->get('datamarts');
-        $dateFrom = $request->get('date_time_from');
-        $dateTo = $request->get('date_time_to');
-        $time = time();
+        $body = $request->query->all();
 
-        // Validate the input data
-        $errors = $validator->validate([
-            'datamarts' => $datamarts,
-            'date_time_from' => $dateFrom,
-            'date_time_to' => $dateTo,
-        ]);
+        // Validate Data and return validation exception if is not valid.
+        // TODO change validation part to before controller request, this is not the best practices in the symfony.
+        $this->validate(body: $body, rules: StatByDepartmentRules::getStatRules(), validator: $validator);
 
-        if (count($errors) > 0) {
-            return new JsonResponse(['errors' => (string)$errors], Response::HTTP_BAD_REQUEST);
+        $response = StatByDepartmentModule::getData(body: $body, redis: $redis);
+
+        return new JsonResponse(['data' => $response], Response::HTTP_OK);
+    }
+
+    /**
+     * @param Request $request
+     * @param ValidatorInterface $validator
+     * @return JsonResponse
+     * @throws ValidationFailedException
+     * @throws RedisException
+     */
+    #[Route('/api/stats/calculate', name: 'calculate', methods: ['POST'])]
+    public function calculate(
+        Request            $request,
+        ValidatorInterface $validator
+    ): JsonResponse
+    {
+        $body = json_decode($request->getContent(), true);
+
+        // Validate Data and return validation exception if is not valid.
+        // TODO change validation part to before controller request, this is not the best practices in the symfony.
+        $this->validate(body: $body, rules: StatByDepartmentRules::getStatCalculateRules(), validator: $validator);
+
+        StatByDepartmentModule::calculate($body);
+
+        return new JsonResponse(['message' => 'Cache is updated successfully'], Response::HTTP_OK);
+    }
+
+    /**
+     * @param array $body
+     * @param Collection $rules
+     * @param ValidatorInterface $validator
+     * @return void
+     */
+    private function validate(array $body, Collection $rules, ValidatorInterface $validator): void
+    {
+        $violations = $validator->validate(value: $body, constraints: $rules);
+
+        if ($violations->count()) {
+            throw  new ValidationFailedException('uiu',$violations);
         }
-
-$dateFrom = new DateTime($dateFrom);
-$dateTo = new DateTime($dateTo);
-$epochDateFrom = $dateFrom->getTimestamp();
-$epochDateTo = $dateTo->getTimestamp();
-
-sort($datamarts);
-// create cache item for the key
-$key = sprintf('%s|%s_%s', implode('_', $datamarts), $epochDateFrom, $epochDateTo);
-
-$item = $cache->getItem($key);
-
-// set the expiration time for the cache item (in seconds)
-//        $item->expiresAfter(3600); // cache for 1 hour
-
-// check if cache item is already in the cache
-if (!$item->isHit()) {
-    // Fetch data from data  access service.
-    $data = [
-        'result' => [],
-        'time' => time()
-    ];
-    $item->set($data);
-    $cache->save($item);
-
-    $response = [
-        'source' => 'DWH',
-        "timestamp" => time()
-    ];
-} else {
-    // Retrieve data from cache
-    $data = $item->get();
-
-    $response = [
-        'source' => 'CACHE',
-        "timestamp" => $data['time']
-    ];
-}
-
-return new JsonResponse(['data' => $response], Response::HTTP_OK);
-}
-
-#[
-Route('/api/stats/calculate', name: 'calculate', methods: ['POST'])]
-    public function calculate(Request $request)
-{
-    dd($request);
-    $datamarts = $request->get('datamarts');
-    $datetime = $request->get('date_time');
-
-    dd($datamarts, $datetime);
-}
+    }
 }
